@@ -1,5 +1,9 @@
 #!/bin/bash
 
-#PYTHONPATH=. ./bin/ryu-manager --verbose --observe-links ryu/app/ForwardingMultiSwitch.py
-PYTHONPATH=. ./bin/ryu-manager --observe-links ryu/app/ForwardingMultiSwitch.py
+BASEDIR=`dirname $0`
+
+echo $BASEDIR
+
+#PYTHONPATH=$BASEDIR $BASEDIR/bin/ryu-manager --verbose --observe-links $BASEDIR/ryu/app/ForwardingMultiSwitch.py
+PYTHONPATH=$BASEDIR $BASEDIR/bin/ryu-manager --observe-links $BASEDIR/ryu/app/ForwardingMultiSwitch.py
 
