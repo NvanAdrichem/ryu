@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 import logging
 
 from ryu.base import app_manager
@@ -42,7 +41,6 @@ from ryu.lib import ovs
 
 LOG = logging.getLogger(__name__)
 
-
 class ForwardingMultiSwitch(app_manager.RyuApp):
     ''' This app dumps discovery events
     '''
@@ -51,8 +49,6 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
     }
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
-    
-
     def __init__(self, *args, **kwargs):
         super(ForwardingMultiSwitch, self).__init__(*args, **kwargs)
 
@@ -60,7 +56,10 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         self.switch_ports = {}
         self.mac_learning = {}
         self.adj = defaultdict(lambda:defaultdict(lambda:None))
+        self.cost = defaultdict(lambda:defaultdict(lambda:float("+inf")))
+        self.prev = defaultdict(lambda:defaultdict(lambda:None))
         self.fw = defaultdict(lambda:defaultdict(lambda:None))
+        self.dpids = lambda:[dpid for dpid in sorted( self.switches.keys() )]
 
         # For testing when sync and async request.
 #        self.threads.append(
@@ -74,7 +73,6 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
 #            hub.spawn(self._link_request_async, 10))
 
 #        self.is_active = True
-
 
     @handler.set_ev_cls(ofp_event.EventOFPStateChange,  [CONFIG_DISPATCHER])
     def state_change_handler(self, ev):
@@ -108,10 +106,6 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         inst = [ parser.OFPInstructionActions( ofp.OFPIT_APPLY_ACTIONS, actions ) ]
         mod = parser.OFPFlowMod(datapath=dp, match=match, instructions=inst, priority=0) #LOWEST PRIORITY POSSIBLE
         dp.send_msg(mod)
-        
-
-        
-    
 
     @handler.set_ev_cls(event.EventSwitchLeave)
     def switch_leave_handler(self, ev):
@@ -141,11 +135,9 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         self.switch_ports[src.dpid,src.port_no] = link
 
         #self._print_adj_matrix()        
-        
-        
+
         self._calc_ForwardingMatrix()
         #self._print_fw_matrix()
-        
 
     @handler.set_ev_cls(event.EventLinkDelete)
     def link_del_handler(self, ev):
@@ -191,11 +183,11 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
             if buffer_id != None:
                 #Drop the packet from the buffer on the incoming switch to prevent buffer overflows.
                 if tDpid != dpid:
-                    LOG.warn("\tDropping buffer_id on incoming switch %d"%(dpid))
+                    LOG.warn("\t\tDropping buffer_id on incoming switch %d"%(dpid))
                     actions = []
                 #Or forward if that is also the destination switch.
                 else:
-                    LOG.warn("\tOutputting via buffer_id on switch %d"%(tDpid))
+                    LOG.warn("\t\tOutputting via buffer_id on switch %d"%(tDpid))
                     actions = [ action ]
                     
                 req = parser.OFPPacketOut(dp, buffer_id = buffer_id, in_port=in_port, actions=actions)
@@ -203,16 +195,12 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
                 
             #Forward packet through data-field.
             if buffer_id == None or tDpid != dpid:
-                LOG.warn("\tOutputting on outgoing switch %d"%(tDpid))
+                LOG.warn("\t\tOutputting on outgoing switch %d"%(tDpid))
                 switch = self.switches[tDpid]
                 actions = [ action ]
                 req = parser.OFPPacketOut(dp, buffer_id = ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=data)
                 switch.dp.send_msg(req)
-                
-                
-                
 
-        
         msg = ev.msg
         dp = msg.datapath
         dpid = msg.datapath.id
@@ -234,8 +222,7 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         data = msg.data        
         pkt = packet.Packet(data)
         eth = pkt.get_protocol(ethernet.ethernet)
-        
-        
+
         LOG.debug("ForwardingMultiSwitch: New incoming packet from %s at switch %d, port %d, for reason %s"%(eth.src,dpid,in_port,reason))        
         
         if self.CONF.observe_links and eth.ethertype == ether_types.ETH_TYPE_LLDP:
@@ -251,15 +238,14 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         
         if (dpid,in_port) not in self.switch_ports:
             # only relearn locations if they arrived from non-interswitch links
-            self.mac_learning[eth.src] = SwitchPort(dpid, in_port)	#relearn the location of the mac-address
+            self.mac_learning[eth.src] = SwitchPort(dpid, in_port)    #relearn the location of the mac-address
             LOG.warn("\tLearned or updated MAC address")
         else:
             LOG.warn("\tIncoming packet from switch-to-switch link, this should NOT occur.")
             #DROP it
-        
-        
+
         if mac.is_multicast( mac.haddr_to_bin(eth.dst) ):
-            #Maybe we should do something with preconfigured broadcast trees, but that is a different problem for now.
+            self._install_tree(dpid, pkt, in_port)
             flood()
             LOG.warn("\tFlooded multicast packet")
         elif eth.dst not in self.mac_learning:
@@ -272,20 +258,16 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
             LOG.warn("\tProcessed packet, send to recipient at %s"%(self.mac_learning[eth.dst],))
         #Create flow and output or forward.
         else:
-            
-            
-                
+
             self._install_path(dpid, pkt)
-                    
             
             #Output the first packet to its destination
             output(self.mac_learning[eth.dst].dpid, self.mac_learning[eth.dst].port)
             LOG.warn("\tProcessed packet, sent to recipient at %s"%(self.mac_learning[eth.dst],))
 
-
     def _print_adj_matrix(self):
         mat = self.adj
-        dpids = [dpid for dpid in sorted( self.switches.keys() )]
+        dpids = self.dpids()
         
         str = ""
         for dpid in dpids:
@@ -303,12 +285,10 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
             str+= "\n"
             
         LOG.warn( str )
-                
-                        
 
     def _print_fw_matrix(self):
         mat = self.fw
-        dpids = [dpid for dpid in sorted( self.switches.keys() )]
+        dpids = self.dpids()
         
         str = ""
         for dpid in dpids:
@@ -326,39 +306,60 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
             str+= "\n"
             
         LOG.warn( str )
-                
-            
-        
 
     def _calc_ForwardingMatrix(self):
         #Floyd-Warshall implementation
         LOG.debug("ForwardingMultiSwitch: Calculating forwarding matrix")
-        fw = defaultdict(lambda:defaultdict(lambda:None))
         cost = defaultdict(lambda:defaultdict(lambda:float("+inf")))
-        
-        dpids = [dpid for dpid in sorted( self.switches.keys() )]
-        
+        prev = defaultdict(lambda:defaultdict(lambda:None))
+        fw   = defaultdict(lambda:defaultdict(lambda:None))
+
+        dpids = self.dpids()
+
         for dpid in dpids:
                 cost[dpid][dpid] = 0
-                fw[dpid][dpid] = None
-                
+                #prev[dpid][dpid] = None #Default behaviour to be None
+                #fw  [dpid][dpid] = None
+
         for u in dpids:
             for v in dpids:
                 if u != v and self.adj[u][v] != None:
-                    cost[u][v] = 1 #weight of 1 hop count
-                    fw[u][v] = (v, self.adj[u][v])   #direct connection
+                    cost[u][v] = 1                      #weight of 1 hop count
+                    prev[u][v] = (u, self.adj[u][v])    #direct connection
+                    fw  [u][v] = (v, self.adj[u][v])
 
         for k in dpids:
             for i in dpids:
                 for j in dpids:
-                    if cost[i][k] + cost [k][j] < cost[i][j]:
+                    if cost[i][k] + cost[k][j] < cost[i][j]:
                         cost[i][j] = cost[i][k] + cost [k][j]
-                        fw[i][j] = fw[i][k]
-                        
-        self.fw = fw
+                        prev[i][j] = prev[k][j]
+                        fw[i][j]   = fw  [i][k]
+
+        self.cost = cost
+        self.prev = prev
+        self.fw   = fw
+
         #LOG.warn("ForwardingMultiSwitch: Computed new forwarding matrix")
-        
-        
+
+    def _get_tree(self, src):
+        LOG.warn("\t\tFinding tree from switch %d"%(src,))
+
+        prev = self.prev
+
+        dpids = self.dpids()
+
+        _tree={}
+        for i in dpids:
+            _tree[i] = []
+
+        for i in dpids:
+            if i != src:
+                (prevhop, port) = prev[src][i]
+                _tree[prevhop].append(port)
+
+        return _tree
+
     def _get_path(self, src, dst):
         LOG.warn("\t\tFinding path from switch %d to switch %d"%(src,dst))
 
@@ -376,58 +377,88 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         while nexthop != dst:
             (nexthop, port) = fw[nexthop][dst]
             _path.append((nexthop, port))
-            
+
         return _path
-        
+
+    def _install_tree(self, dpid, pkt, in_port):
+        dp = self.switches[dpid].dp
+        ofp = dp.ofproto
+        parser = dp.ofproto_parser
+
+        eth = pkt.get_protocol(ethernet.ethernet)
+
+        match = parser.OFPMatch(eth_src=eth.src, eth_dst=eth.dst)
+
+        LOG.warn("\tLook up tree from switch %d"%(dpid,))
+        tree = self._get_tree(dpid)
+        if tree == None:
+            LOG.error("\t\tNo tree found")
+            return -1
+
+        LOG.warn("\t\tTree found")
+
+        for iDpid in tree:
+            #Inter-switch ports:
+            ports = tree[iDpid]
+
+            #Add non-switch (thus hosts-)ports
+            switch = self.switches[iDpid]
+            ports += [p.port_no for p in switch.ports if (iDpid,p.port_no) != (dpid, in_port) and (iDpid,p.port_no) not in self.switch_ports]
+
+            LOG.warn("\t\tConfigure switch %d to flood to ports %s"%(iDpid, ports))
+
+            #Send rules
+            dp = self.switches[iDpid].dp
+            ofp = dp.ofproto
+            parser = dp.ofproto_parser
+
+            actions = [parser.OFPActionOutput(port) for port in ports]
+            inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
+            req = parser.OFPFlowMod(datapath=dp, match=match, instructions = inst)
+            dp.send_msg(req)
+
     def _install_path(self, dpid, pkt):
         dp = self.switches[dpid].dp
         ofp = dp.ofproto
-        parser = dp.ofproto_parser            
-        
+        parser = dp.ofproto_parser
+
         eth = pkt.get_protocol(ethernet.ethernet)
         dst = self.mac_learning[eth.dst]
-        
-        match = parser.OFPMatch(eth_dst=eth.dst)        
-        
+
+        match = parser.OFPMatch(eth_src=eth.src, eth_dst=eth.dst)
+
         LOG.warn("\tLook up path from switch %d to %s"%(dpid, dst))
         path = self._get_path(dpid, dst.dpid)
         if path == None:
             LOG.error("\t\tNo path found")
             return -1
-            
+
         LOG.warn("\t\tPath found")
-        
+
         for (nexthop, port) in path:
             LOG.warn("\t\tConfigure switch %d to forward to switch %d over port %d"%(dpid, nexthop,port))
-            
+
             actions = [parser.OFPActionOutput(port)]
             inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
             req = parser.OFPFlowMod(datapath=dp, match=match, instructions = inst)
             dp.send_msg(req)
-                    
-            
+
             dpid = nexthop
             dp = self.switches[dpid].dp
             ofp = dp.ofproto
             parser = dp.ofproto_parser    
-            
+
         assert dpid == dst.dpid
         port = dst.port
         LOG.warn("\t\tConfigure switch %d to output on port %d"%(dpid,port))
-        
+
         actions = [parser.OFPActionOutput(port)]
         inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
         req = parser.OFPFlowMod(datapath=dp, match=match, instructions = inst)
         dp.send_msg(req)
-        
+
         LOG.warn("\t\tDone.")
         return -2
-        
-        
 
-
-        
-                
-        
 app_manager.require_app('ryu.topology.switches', api_style=False)
 
