@@ -97,6 +97,7 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         self.switches[switch.dp.id] = switch
         
         dp = switch.dp
+        dpid = dp.id
         ofp = dp.ofproto
         parser = dp.ofproto_parser
 
@@ -106,6 +107,12 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         inst = [ parser.OFPInstructionActions( ofp.OFPIT_APPLY_ACTIONS, actions ) ]
         mod = parser.OFPFlowMod(datapath=dp, match=match, instructions=inst, priority=0) #LOWEST PRIORITY POSSIBLE
         dp.send_msg(mod)
+
+        self._print_adj_matrix()
+        self.cost[dpid][dpid] = 0
+        self.prev[dpid][dpid] = (dpid, 0)
+        self.fw  [dpid][dpid] = (dpid, 0)
+        self._print_fw_matrix()
 
     @handler.set_ev_cls(event.EventSwitchLeave)
     def switch_leave_handler(self, ev):
@@ -134,10 +141,9 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         self.adj[src.dpid][dst.dpid] = src.port_no
         self.switch_ports[src.dpid,src.port_no] = link
 
-        #self._print_adj_matrix()        
-
+        self._print_adj_matrix()        
         self._calc_ForwardingMatrix()
-        #self._print_fw_matrix()
+        self._print_fw_matrix()
 
     @handler.set_ev_cls(event.EventLinkDelete)
     def link_del_handler(self, ev):
@@ -148,58 +154,55 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
     def packet_in_handler(self, ev):
         
         def drop():
-            LOG.error("\tImplement drop function")
-            
+            LOG.error("\tDropping packet")
+            _output(dpid, [])
+
         def flood():
             LOG.warn("\tFlooding packet")
             for (iDpid, switch) in self.switches.iteritems():
+		if self.fw[dpid][iDpid] is not None: #Check if the destination is in the same broadcast domain as the source.
 
-                #Initialize ports
-                ports = []
-                #Add local port if that is not the originating port, only necessary in Hardware Testbed
-                #if (iDpid,ofp.OFPP_LOCAL) != (dpid, in_port):
-                #    ports += [ofp.OFPP_LOCAL]
+		        #Initialize ports
+		        ports = []
+		        #Add local port if that is not the originating port, only necessary in Hardware Testbed
+		        #if (iDpid,ofp.OFPP_LOCAL) != (dpid, in_port):
+		        #    ports += [ofp.OFPP_LOCAL]
 
-                #Exclude the inter-switch and possible other incoming ports from flooding
-                ports += [p.port_no for p in switch.ports if (iDpid,p.port_no) != (dpid, in_port) and (iDpid,p.port_no) not in self.switch_ports]
-                
-                actions = [parser.OFPActionOutput(port, 0) for port in ports]
-
-                if iDpid == dpid and buffer_id != None:
-                    LOG.warn("\t\tFlooding Originating Switch %d using Buffer ID"%(iDpid))
-                    req = parser.OFPPacketOut(dp, buffer_id = buffer_id, in_port=in_port, actions=actions)
-                    switch.dp.send_msg(req)
-                    
-                elif len(actions) > 0:
-                    LOG.warn("\t\tFlooding Switch %d"%(iDpid))
-                    req = parser.OFPPacketOut(dp, buffer_id = ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=data)
-                    switch.dp.send_msg(req)        
+		        #Exclude the inter-switch and possible other incoming ports from flooding
+		        ports += [p.port_no for p in switch.ports if (iDpid,p.port_no) != (dpid, in_port) and (iDpid,p.port_no) not in self.switch_ports]
+		        
+		        if len(ports)>0:
+                            _output(iDpid, ports)        
             
         def output(tDpid, port):
             LOG.warn("\tOutputting packet")
+            if self.fw[dpid][tDpid] is None:
+		LOG.error("\t\tDestination not in domain of source, this should NOT occur! Dropping the packet")
+		_drop()
+		return		
 
-            action = parser.OFPActionOutput(port, 0)
-            
-            if buffer_id != None:
-                #Drop the packet from the buffer on the incoming switch to prevent buffer overflows.
-                if tDpid != dpid:
-                    LOG.warn("\t\tDropping buffer_id on incoming switch %d"%(dpid))
-                    actions = []
-                #Or forward if that is also the destination switch.
-                else:
-                    LOG.warn("\t\tOutputting via buffer_id on switch %d"%(tDpid))
-                    actions = [ action ]
-                    
+	    #Drop the packet from the buffer on the incoming switch to prevent buffer overflows.
+	    if tDpid != dpid:
+                _drop()
+
+            _output(tDpid, [port])
+
+        def _output(tDpid, ports):
+	    actions = [parser.OFPActionOutput(port, 0) for port in ports]
+
+	    if buffer_id != None and tDpid == dpid:
+                LOG.warn("\t\tOutputting via buffer_id on switch %d ports %s"%(tDpid, ports))
                 req = parser.OFPPacketOut(dp, buffer_id = buffer_id, in_port=in_port, actions=actions)
-                dp.send_msg(req)
-                
-            #Forward packet through data-field.
-            if buffer_id == None or tDpid != dpid:
-                LOG.warn("\t\tOutputting on outgoing switch %d"%(tDpid))
-                switch = self.switches[tDpid]
-                actions = [ action ]
-                req = parser.OFPPacketOut(dp, buffer_id = ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=data)
-                switch.dp.send_msg(req)
+	        dp.send_msg(req)
+	        
+	    #Forward packet through data-field.
+	    elif len(ports)>0:
+	        LOG.warn("\t\tOutputting on outgoing switch %d ports %s"%(tDpid, ports))
+	        switch = self.switches[tDpid]
+	        req = parser.OFPPacketOut(dp, buffer_id = ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=data)
+	        switch.dp.send_msg(req)
+            else:
+                LOG.warn("\t\tDropped by definition due to no output-ports nor buffer_id")
 
         msg = ev.msg
         dp = msg.datapath
@@ -318,8 +321,8 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
 
         for dpid in dpids:
                 cost[dpid][dpid] = 0
-                #prev[dpid][dpid] = None #Default behaviour to be None
-                #fw  [dpid][dpid] = None
+                prev[dpid][dpid] = (dpid, 0)
+                fw  [dpid][dpid] = (dpid, 0)
 
         for u in dpids:
             for v in dpids:
@@ -347,16 +350,16 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
 
         prev = self.prev
 
-        dpids = self.dpids()
+        dpids = [dpid for dpid in self.dpids() if prev[src][dpid] is not None] #Check if the destination is in the same broadcast domain as the source.
 
         _tree={}
         for i in dpids:
-            _tree[i] = []
+                _tree[i] = []
 
         for i in dpids:
-            if i != src:
-                (prevhop, port) = prev[src][i]
-                _tree[prevhop].append(port)
+                if i != src:
+                    (prevhop, port) = prev[src][i]
+                    _tree[prevhop].append(port)
 
         return _tree
 
@@ -404,18 +407,18 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
             #Add non-switch (thus hosts-)ports
             switch = self.switches[iDpid]
             ports += [p.port_no for p in switch.ports if (iDpid,p.port_no) != (dpid, in_port) and (iDpid,p.port_no) not in self.switch_ports]
+            if len(ports)>0:
+                LOG.warn("\t\tConfigure switch %d to flood to ports %s"%(iDpid, ports))
 
-            LOG.warn("\t\tConfigure switch %d to flood to ports %s"%(iDpid, ports))
+                #Send rules
+                dp = self.switches[iDpid].dp
+                ofp = dp.ofproto
+                parser = dp.ofproto_parser
 
-            #Send rules
-            dp = self.switches[iDpid].dp
-            ofp = dp.ofproto
-            parser = dp.ofproto_parser
-
-            actions = [parser.OFPActionOutput(port) for port in ports]
-            inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
-            req = parser.OFPFlowMod(datapath=dp, match=match, instructions = inst)
-            dp.send_msg(req)
+                actions = [parser.OFPActionOutput(port) for port in ports]
+                inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
+                req = parser.OFPFlowMod(datapath=dp, match=match, instructions = inst)
+                dp.send_msg(req)
 
     def _install_path(self, dpid, pkt):
         dp = self.switches[dpid].dp
