@@ -155,6 +155,9 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         
         def drop():
             LOG.error("\tDropping packet")
+            _drop()
+
+	def _drop():
             _output(dpid, [])
 
         def flood():
