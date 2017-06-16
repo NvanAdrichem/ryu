@@ -157,53 +157,53 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
             LOG.error("\tDropping packet")
             _drop()
 
-	def _drop():
+        def _drop():
             _output(dpid, [])
 
         def flood():
             LOG.warn("\tFlooding packet")
             for (iDpid, switch) in self.switches.iteritems():
-		if self.fw[dpid][iDpid] is not None: #Check if the destination is in the same broadcast domain as the source.
+                if self.fw[dpid][iDpid] is not None: #Check if the destination is in the same broadcast domain as the source.
 
-		        #Initialize ports
-		        ports = []
-		        #Add local port if that is not the originating port, only necessary in Hardware Testbed
-		        #if (iDpid,ofp.OFPP_LOCAL) != (dpid, in_port):
-		        #    ports += [ofp.OFPP_LOCAL]
+                    #Initialize ports
+                    ports = []
+                    #Add local port if that is not the originating port, only necessary in Hardware Testbed
+                    #if (iDpid,ofp.OFPP_LOCAL) != (dpid, in_port):
+                    #    ports += [ofp.OFPP_LOCAL]
 
-		        #Exclude the inter-switch and possible other incoming ports from flooding
-		        ports += [p.port_no for p in switch.ports if (iDpid,p.port_no) != (dpid, in_port) and (iDpid,p.port_no) not in self.switch_ports]
-		        
-		        if len(ports)>0:
-                            _output(iDpid, ports)        
+                    #Exclude the inter-switch and possible other incoming ports from flooding
+                    ports += [p.port_no for p in switch.ports if (iDpid,p.port_no) != (dpid, in_port) and (iDpid,p.port_no) not in self.switch_ports]
+
+                    if len(ports)>0:
+                        _output(iDpid, ports)        
             
         def output(tDpid, port):
             LOG.warn("\tOutputting packet")
             if self.fw[dpid][tDpid] is None:
-		LOG.error("\t\tDestination not in domain of source, this should NOT occur! Dropping the packet")
-		_drop()
-		return		
+                LOG.error("\t\tDestination not in domain of source, this should NOT occur! Dropping the packet")
+                _drop()
+                return
 
-	    #Drop the packet from the buffer on the incoming switch to prevent buffer overflows.
-	    if tDpid != dpid:
+            #Drop the packet from the buffer on the incoming switch to prevent buffer overflows.
+            if tDpid != dpid:
                 _drop()
 
             _output(tDpid, [port])
 
         def _output(tDpid, ports):
-	    actions = [parser.OFPActionOutput(port, 0) for port in ports]
+            actions = [parser.OFPActionOutput(port, 0) for port in ports]
 
-	    if buffer_id != None and tDpid == dpid:
+            if buffer_id != None and tDpid == dpid:
                 LOG.warn("\t\tOutputting via buffer_id on switch %d ports %s"%(tDpid, ports))
                 req = parser.OFPPacketOut(dp, buffer_id = buffer_id, in_port=in_port, actions=actions)
-	        dp.send_msg(req)
-	        
-	    #Forward packet through data-field.
-	    elif len(ports)>0:
-	        LOG.warn("\t\tOutputting on outgoing switch %d ports %s"%(tDpid, ports))
-	        switch = self.switches[tDpid]
-	        req = parser.OFPPacketOut(dp, buffer_id = ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=data)
-	        switch.dp.send_msg(req)
+                dp.send_msg(req)
+
+            #Forward packet through data-field.
+            elif len(ports)>0:
+                LOG.warn("\t\tOutputting on outgoing switch %d ports %s"%(tDpid, ports))
+                switch = self.switches[tDpid]
+                req = parser.OFPPacketOut(dp, buffer_id = ofp.OFP_NO_BUFFER, in_port=ofp.OFPP_CONTROLLER, actions=actions, data=data)
+                switch.dp.send_msg(req)
             else:
                 LOG.warn("\t\tDropped by definition due to no output-ports nor buffer_id")
 
