@@ -265,7 +265,7 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         #Create flow and output or forward.
         else:
 
-            self._install_path(dpid, pkt)
+            self._install_path(dpid, pkt, in_port)
             
             #Output the first packet to its destination
             output(self.mac_learning[eth.dst].dpid, self.mac_learning[eth.dst].port)
@@ -393,7 +393,8 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
 
         eth = pkt.get_protocol(ethernet.ethernet)
 
-        match = parser.OFPMatch(eth_src=eth.src, eth_dst=eth.dst)
+        match_kwargs = dict(eth_src=eth.src, eth_dst=eth.dst)
+        LOG.debug("\tBase match = %s"%(match_kwargs,))
 
         LOG.warn("\tLook up tree from switch %d"%(dpid,))
         tree = self._get_tree(dpid)
@@ -412,7 +413,13 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
             ports += [p.port_no for p in switch.ports if (iDpid,p.port_no) != (dpid, in_port) and (iDpid,p.port_no) not in self.switch_ports]
             if len(ports)>0:
                 LOG.warn("\t\tConfigure switch %d to flood to ports %s"%(iDpid, ports))
-
+                if iDpid == dpid:
+                    _in_port = in_port
+                else:
+                    (_, _in_port) = self.fw[iDpid][dpid]
+                match_kwargs['in_port'] = _in_port
+                match = parser.OFPMatch(**match_kwargs)
+                LOG.debug("\t\tHop-individual match = %s"%(match,))
                 #Send rules
                 dp = self.switches[iDpid].dp
                 ofp = dp.ofproto
@@ -423,7 +430,7 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
                 req = parser.OFPFlowMod(datapath=dp, match=match, instructions = inst)
                 dp.send_msg(req)
 
-    def _install_path(self, dpid, pkt):
+    def _install_path(self, dpid, pkt, in_port):
         dp = self.switches[dpid].dp
         ofp = dp.ofproto
         parser = dp.ofproto_parser
@@ -431,8 +438,8 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         eth = pkt.get_protocol(ethernet.ethernet)
         dst = self.mac_learning[eth.dst]
 
-        match = parser.OFPMatch(eth_src=eth.src, eth_dst=eth.dst)
-
+        match_kwargs = dict(eth_src=eth.src, eth_dst=eth.dst)
+        LOG.debug("\tBase match = %s"%(match_kwargs,))
         LOG.warn("\tLook up path from switch %d to %s"%(dpid, dst))
         path = self._get_path(dpid, dst.dpid)
         if path == None:
@@ -444,20 +451,30 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         for (nexthop, port) in path:
             LOG.warn("\t\tConfigure switch %d to forward to switch %d over port %d"%(dpid, nexthop,port))
 
+            match_kwargs['in_port'] = in_port
+            match = parser.OFPMatch(**match_kwargs)
+            LOG.debug("\t\tHop-individual match = %s"%(match,))
             actions = [parser.OFPActionOutput(port)]
             inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
             req = parser.OFPFlowMod(datapath=dp, match=match, instructions = inst)
             dp.send_msg(req)
 
+            prevhop = dpid
+            in_port = self.adj[nexthop][prevhop]
+
             dpid = nexthop
             dp = self.switches[dpid].dp
             ofp = dp.ofproto
-            parser = dp.ofproto_parser    
+            parser = dp.ofproto_parser
+
 
         assert dpid == dst.dpid
         port = dst.port
         LOG.warn("\t\tConfigure switch %d to output on port %d"%(dpid,port))
 
+        match_kwargs['in_port'] = in_port
+        match = parser.OFPMatch(**match_kwargs)
+        LOG.debug("\t\tHop-individual match = %s"%(match,))
         actions = [parser.OFPActionOutput(port)]
         inst = [parser.OFPInstructionActions(ofp.OFPIT_APPLY_ACTIONS, actions)]
         req = parser.OFPFlowMod(datapath=dp, match=match, instructions = inst)
