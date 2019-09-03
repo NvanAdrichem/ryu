@@ -278,7 +278,7 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         _str = "AdjacencyMatrix\n\tTo:"
         for dpid in dpids:
             _str += "\t%d"%(dpid,)
-        _str += "\nFrom:\t"
+        _str += "\nFrom:\tPort"
         for dpid in dpids:
             _str += "\t%s"%(len(str(dpid))*'_',)
         _str+= "\n"
