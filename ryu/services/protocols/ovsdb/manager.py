@@ -19,6 +19,7 @@ import socket
 from ryu import cfg
 from ryu.base import app_manager
 from ryu.lib import hub
+from ryu.lib import ip
 from ryu.services.protocols.ovsdb import client
 from ryu.services.protocols.ovsdb import event
 from ryu.controller import handler
@@ -91,7 +92,12 @@ class OVSDB(app_manager.RyuApp):
                 sock.close()
                 continue
 
-            self.logger.debug('New connection from %s:%s' % client_address)
+            if ip.valid_ipv6(client_address[0]):
+                self.logger.debug(
+                    'New connection from [%s]:%s' % client_address[:2])
+            else:
+                self.logger.debug(
+                    'New connection from %s:%s' % client_address[:2])
             t = hub.spawn(self._start_remote, sock, client_address)
             self.threads.append(t)
 
@@ -146,7 +152,7 @@ class OVSDB(app_manager.RyuApp):
         if app:
             self._clients[app.name] = app
             app.start()
-            ev = event.EventNewOVSDBConnection(app.system_id)
+            ev = event.EventNewOVSDBConnection(app)
             self.send_event_to_observers(ev)
 
         else:
@@ -158,7 +164,11 @@ class OVSDB(app_manager.RyuApp):
             sock.close()
 
     def start(self):
-        server = hub.listen((self._address, self._port))
+        if ip.valid_ipv6(self._address):
+            server = hub.listen(
+                (self._address, self._port), family=socket.AF_INET6)
+        else:
+            server = hub.listen((self._address, self._port))
         key = self.CONF.ovsdb.mngr_privkey or self.CONF.ctl_privkey
         cert = self.CONF.ovsdb.mngr_cert or self.CONF.ctl_cert
 
@@ -173,8 +183,12 @@ class OVSDB(app_manager.RyuApp):
 
         self._server = server
 
-        self.logger.info('Listening on %s:%s for clients' % (self._address,
-                                                             self._port))
+        if ip.valid_ipv6(self._address):
+            self.logger.info(
+                'Listening on [%s]:%s for clients', self._address, self._port)
+        else:
+            self.logger.info(
+                'Listening on %s:%s for clients', self._address, self._port)
         t = hub.spawn(self._accept, self._server)
         super(OVSDB, self).start()
         return t

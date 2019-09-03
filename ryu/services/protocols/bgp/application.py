@@ -14,7 +14,103 @@
 # limitations under the License.
 
 """
-  Defines bases classes to create a BGP application.
+This module provides a convenient application for using Ryu BGPSpeaker and for
+writing your BGP application.
+
+It reads a configuration file which includes settings for neighbors, routes
+and some others.
+Please refer to ``ryu/services/protocols/bgp/bgp_sample_conf.py`` for the
+sample configuration.
+
+Usage Example::
+
+    $ ryu-manager ryu/services/protocols/bgp/application.py \\
+        --bgp-app-config-file ryu/services/protocols/bgp/bgp_sample_conf.py
+
+SSH Console
+===========
+
+You can also use the SSH console and see the RIB and do some operations from
+this console.
+The SSH port and username/password can be configured by the configuration file.
+You can check the help by hitting '?' key in this interface.
+
+Example::
+
+    $ ssh localhost -p 4990
+
+    Hello, this is Ryu BGP speaker (version 4.19).
+
+    bgpd> # Hit '?' key
+     clear - allows to reset BGP connections
+     help - show this help
+     quit - exit this session
+     set - set runtime settings
+     show - shows runtime state information
+    bgpd>
+    bgpd> show rib all
+    Status codes: * valid, > best
+    Origin codes: i - IGP, e - EGP, ? - incomplete
+         Network        Labels   Next Hop   Reason      Metric LocPrf Path
+     *>  10.10.1.0/24   None     0.0.0.0    Only Path                 i
+    bgpd>
+
+Integration with Other Applications
+===================================
+
+``ryu.services.protocols.bgp.application.RyuBGPSpeaker`` will notifies the
+following events to other Ryu applications.
+
+    - ``EventBestPathChanged``
+    - ``EventAdjRibInChanged``
+    - ``EventPeerDown``
+    - ``EventPeerUp``
+
+To catch these events, specify ``@set_ev_cls()`` decorator to the event
+handlers in the Ryu applications.
+
+Example Application::
+
+    # my_bgp_app.py
+
+    from ryu.base import app_manager
+    from ryu.controller.handler import set_ev_cls
+    from ryu.services.protocols.bgp import application as bgp_application
+
+
+    class MyBGPApp(app_manager.RyuApp):
+        _CONTEXTS = {
+            'ryubgpspeaker': bgp_application.RyuBGPSpeaker,
+        }
+
+        def __init__(self, *args, **kwargs):
+            super(MyBGPApp, self).__init__(*args, **kwargs)
+
+            # Stores "ryu.services.protocols.bgp.application.RyuBGPSpeaker"
+            # instance in order to call the APIs of
+            # "ryu.services.protocols.bgp.bgpspeaker.BGPSpeaker" via
+            # "self.app.speaker".
+            # Please note at this time, "BGPSpeaker" is NOT instantiated yet.
+            self.app = kwargs['ryubgpspeaker']
+
+        @set_ev_cls(bgp_application.EventBestPathChanged)
+        def _best_patch_changed_handler(self, ev):
+            self.logger.info(
+                'Best path changed: is_withdraw=%s, path=%s',
+                ev.is_withdraw, ev.path)
+
+Usage Example::
+
+    $ ryu-manager my_bgp_app.py \\
+        --bgp-app-config-file ryu/services/protocols/bgp/bgp_sample_conf.py
+
+.. note::
+
+    For the APIs for ``ryu.services.protocols.bgp.bgpspeaker.BGPSpeaker``,
+    please refer to :doc:`../library_bgp_speaker_ref`.
+
+API Reference
+=============
 """
 
 import logging
@@ -24,6 +120,7 @@ from ryu import cfg
 from ryu.lib import hub
 from ryu.utils import load_source
 from ryu.base.app_manager import RyuApp
+from ryu.controller.event import EventBase
 from ryu.services.protocols.bgp.base import add_bgp_error_metadata
 from ryu.services.protocols.bgp.base import BGPSException
 from ryu.services.protocols.bgp.base import BIN_ERROR
@@ -32,15 +129,7 @@ from ryu.services.protocols.bgp.net_ctrl import NET_CONTROLLER
 from ryu.services.protocols.bgp.net_ctrl import NC_RPC_BIND_IP
 from ryu.services.protocols.bgp.net_ctrl import NC_RPC_BIND_PORT
 from ryu.services.protocols.bgp.rtconf.base import RuntimeConfigError
-from ryu.services.protocols.bgp.rtconf.common import BGP_SERVER_PORT
-from ryu.services.protocols.bgp.rtconf.common import DEFAULT_BGP_SERVER_PORT
-from ryu.services.protocols.bgp.rtconf.common import (
-    DEFAULT_REFRESH_MAX_EOR_TIME, DEFAULT_REFRESH_STALEPATH_TIME)
-from ryu.services.protocols.bgp.rtconf.common import DEFAULT_LABEL_RANGE
-from ryu.services.protocols.bgp.rtconf.common import LABEL_RANGE
 from ryu.services.protocols.bgp.rtconf.common import LOCAL_AS
-from ryu.services.protocols.bgp.rtconf.common import REFRESH_MAX_EOR_TIME
-from ryu.services.protocols.bgp.rtconf.common import REFRESH_STALEPATH_TIME
 from ryu.services.protocols.bgp.rtconf.common import ROUTER_ID
 from ryu.services.protocols.bgp.utils.validation import is_valid_ipv4
 from ryu.services.protocols.bgp.utils.validation import is_valid_ipv6
@@ -87,7 +176,100 @@ def load_config(config_file):
         raise ApplicationException(desc=str(e))
 
 
+class EventBestPathChanged(EventBase):
+    """
+    Event called when any best remote path is changed due to UPDATE messages
+    or remote peer's down.
+
+    This event is the wrapper for ``best_path_change_handler`` of
+    ``bgpspeaker.BGPSpeaker``.
+
+    ``path`` attribute contains an instance of ``info_base.base.Path``
+    subclasses.
+
+    If ``is_withdraw`` attribute is ``True``, ``path`` attribute has the
+    information of the withdraw route.
+    """
+
+    def __init__(self, path, is_withdraw):
+        super(EventBestPathChanged, self).__init__()
+        self.path = path
+        self.is_withdraw = is_withdraw
+
+
+class EventAdjRibInChanged(EventBase):
+    """
+    Event called when any adj-RIB-in path is changed due to UPDATE messages
+    or remote peer's down.
+
+    This event is the wrapper for ``adj_rib_in_change_handler`` of
+    ``bgpspeaker.BGPSpeaker``.
+
+    ``path`` attribute contains an instance of ``info_base.base.Path``
+    subclasses.
+
+    If ``is_withdraw`` attribute is ``True``, ``path`` attribute has the
+    information of the withdraw route.
+
+    ``peer_ip`` is the peer's IP address who sent this path.
+
+    ``peer_as`` is the peer's AS number who sent this path.
+    """
+
+    def __init__(self, path, is_withdraw, peer_ip, peer_as):
+        super(EventAdjRibInChanged, self).__init__()
+        self.path = path
+        self.is_withdraw = is_withdraw
+        self.peer_ip = peer_ip
+        self.peer_as = peer_as
+
+
+class EventPeerDown(EventBase):
+    """
+    Event called when the session to the remote peer goes down.
+
+    This event is the wrapper for ``peer_down_handler`` of
+    ``bgpspeaker.BGPSpeaker``.
+
+    ``remote_ip`` attribute is the IP address of the remote peer.
+
+    ``remote_as`` attribute is the AS number of the remote peer.
+    """
+
+    def __init__(self, remote_ip, remote_as):
+        super(EventPeerDown, self).__init__()
+        self.remote_ip = remote_ip
+        self.remote_as = remote_as
+
+
+class EventPeerUp(EventBase):
+    """
+    Event called when the session to the remote peer goes up.
+
+    This event is the wrapper for ``peer_up_handler`` of
+    ``bgpspeaker.BGPSpeaker``.
+
+    ``remote_ip`` attribute is the IP address of the remote peer.
+
+    ``remote_as`` attribute is the AS number of the remote peer.
+    """
+
+    def __init__(self, remote_ip, remote_as):
+        super(EventPeerUp, self).__init__()
+        self.remote_ip = remote_ip
+        self.remote_as = remote_as
+
+
 class RyuBGPSpeaker(RyuApp):
+    """
+    Base application for implementing BGP applications.
+    """
+    _EVENTS = [
+        EventBestPathChanged,
+        EventAdjRibInChanged,
+        EventPeerDown,
+        EventPeerUp,
+    ]
 
     def __init__(self, *args, **kwargs):
         super(RyuBGPSpeaker, self).__init__(*args, **kwargs)
@@ -138,42 +320,63 @@ class RyuBGPSpeaker(RyuApp):
         """
         Starts BGPSpeaker using the given settings.
         """
-        # Settings for starting BGPSpeaker
-        bgp_settings = {}
+        # Check required settings.
+        _required_settings = (
+            LOCAL_AS,
+            ROUTER_ID,
+        )
+        for required in _required_settings:
+            if required not in settings:
+                raise ApplicationException(
+                    desc='Required BGP configuration missing: %s' % required)
 
-        # Get required settings.
-        try:
-            bgp_settings['as_number'] = settings.get(LOCAL_AS)
-            bgp_settings['router_id'] = settings.get(ROUTER_ID)
-        except KeyError as e:
-            raise ApplicationException(
-                desc='Required BGP configuration missing: %s' % e)
+        # Set event notify handlers if no corresponding handler specified.
+        settings.setdefault(
+            'best_path_change_handler', self._notify_best_path_changed_event)
+        settings.setdefault(
+            'adj_rib_in_change_handler', self._notify_adj_rib_in_changed_event)
+        settings.setdefault(
+            'peer_down_handler', self._notify_peer_down_event)
+        settings.setdefault(
+            'peer_up_handler', self._notify_peer_up_event)
 
-        # Get optional settings.
-        bgp_settings[BGP_SERVER_PORT] = settings.get(
-            BGP_SERVER_PORT, DEFAULT_BGP_SERVER_PORT)
-        bgp_settings[REFRESH_STALEPATH_TIME] = settings.get(
-            REFRESH_STALEPATH_TIME, DEFAULT_REFRESH_STALEPATH_TIME)
-        bgp_settings[REFRESH_MAX_EOR_TIME] = settings.get(
-            REFRESH_MAX_EOR_TIME, DEFAULT_REFRESH_MAX_EOR_TIME)
-        bgp_settings[LABEL_RANGE] = settings.get(
-            LABEL_RANGE, DEFAULT_LABEL_RANGE)
+        # Pop settings other than creating BGPSpeaker instance.
+        neighbors_settings = settings.pop('neighbors', [])
+        vrfs_settings = settings.pop('vrfs', [])
+        routes_settings = settings.pop('routes', [])
 
         # Create BGPSpeaker instance.
         LOG.debug('Starting BGPSpeaker...')
-        self.speaker = BGPSpeaker(**bgp_settings)
+        settings.setdefault('as_number', settings.pop(LOCAL_AS))
+        self.speaker = BGPSpeaker(**settings)
 
         # Add neighbors.
         LOG.debug('Adding neighbors...')
-        self._add_neighbors(settings.get('neighbors', []))
+        self._add_neighbors(neighbors_settings)
 
         # Add VRFs.
         LOG.debug('Adding VRFs...')
-        self._add_vrfs(settings.get('vrfs', []))
+        self._add_vrfs(vrfs_settings)
 
-        # Add Networks
+        # Add routes
         LOG.debug('Adding routes...')
-        self._add_routes(settings.get('routes', []))
+        self._add_routes(routes_settings)
+
+    def _notify_best_path_changed_event(self, ev):
+        ev = EventBestPathChanged(ev.path, ev.is_withdraw)
+        self.send_event_to_observers(ev)
+
+    def _notify_adj_rib_in_changed_event(self, ev, peer_ip, peer_as):
+        ev = EventAdjRibInChanged(ev.path, ev.is_withdraw, peer_ip, peer_as)
+        self.send_event_to_observers(ev)
+
+    def _notify_peer_down_event(self, remote_ip, remote_as):
+        ev = EventPeerDown(remote_ip, remote_as)
+        self.send_event_to_observers(ev)
+
+    def _notify_peer_up_event(self, remote_ip, remote_as):
+        ev = EventPeerUp(remote_ip, remote_as)
+        self.send_event_to_observers(ev)
 
     def _add_neighbors(self, settings):
         """
@@ -215,6 +418,8 @@ class RyuBGPSpeaker(RyuApp):
                 prefix_add = self.speaker.prefix_add
             elif 'route_type' in route_settings:
                 prefix_add = self.speaker.evpn_prefix_add
+            elif 'flowspec_family' in route_settings:
+                prefix_add = self.speaker.flowspec_prefix_add
             else:
                 LOG.debug('Skip invalid route settings: %s', route_settings)
                 continue

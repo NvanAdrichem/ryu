@@ -30,12 +30,18 @@ import six
 
 from ryu.lib import hub
 from ryu.lib import sockopt
+from ryu.lib import ip
 from ryu.lib.hub import Timeout
 from ryu.lib.packet.bgp import RF_IPv4_UC
 from ryu.lib.packet.bgp import RF_IPv6_UC
 from ryu.lib.packet.bgp import RF_IPv4_VPN
 from ryu.lib.packet.bgp import RF_IPv6_VPN
 from ryu.lib.packet.bgp import RF_L2_EVPN
+from ryu.lib.packet.bgp import RF_IPv4_FLOWSPEC
+from ryu.lib.packet.bgp import RF_IPv6_FLOWSPEC
+from ryu.lib.packet.bgp import RF_VPNv4_FLOWSPEC
+from ryu.lib.packet.bgp import RF_VPNv6_FLOWSPEC
+from ryu.lib.packet.bgp import RF_L2VPN_FLOWSPEC
 from ryu.lib.packet.bgp import RF_RTC_UC
 from ryu.services.protocols.bgp.utils.circlist import CircularListType
 from ryu.services.protocols.bgp.utils.evtlet import LoopingCall
@@ -56,6 +62,11 @@ SUPPORTED_GLOBAL_RF = {
     RF_RTC_UC,
     RF_IPv6_VPN,
     RF_L2_EVPN,
+    RF_IPv4_FLOWSPEC,
+    RF_IPv6_FLOWSPEC,
+    RF_VPNv4_FLOWSPEC,
+    RF_VPNv6_FLOWSPEC,
+    RF_L2VPN_FLOWSPEC,
 }
 
 
@@ -353,7 +364,7 @@ class Activity(object):
 
         For each connection `server_factory` starts a new protocol.
         """
-        info = socket.getaddrinfo(None, loc_addr[1], socket.AF_UNSPEC,
+        info = socket.getaddrinfo(loc_addr[0], loc_addr[1], socket.AF_UNSPEC,
                                   socket.SOCK_STREAM, 0, socket.AI_PASSIVE)
         listen_sockets = {}
         for res in info:
@@ -400,7 +411,7 @@ class Activity(object):
         The socket is bound to `bind_address` if specified.
         """
         LOG.debug('Connect TCP called for %s:%s', peer_addr[0], peer_addr[1])
-        if netaddr.valid_ipv4(peer_addr[0]):
+        if ip.valid_ipv4(peer_addr[0]):
             family = socket.AF_INET
         else:
             family = socket.AF_INET6

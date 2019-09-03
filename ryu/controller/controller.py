@@ -23,15 +23,17 @@ The main component of OpenFlow controller.
 """
 
 import contextlib
-from ryu import cfg
 import logging
+import random
+from socket import IPPROTO_TCP
+from socket import TCP_NODELAY
+from socket import SHUT_WR
+from socket import timeout as SocketTimeout
+import ssl
+
+from ryu import cfg
 from ryu.lib import hub
 from ryu.lib.hub import StreamServer
-import traceback
-import random
-import ssl
-from socket import IPPROTO_TCP, TCP_NODELAY, SHUT_RDWR, timeout as SocketTimeout
-import warnings
 
 import ryu.base.app_manager
 
@@ -45,12 +47,17 @@ from ryu.controller import ofp_event
 from ryu.controller.handler import HANDSHAKE_DISPATCHER, DEAD_DISPATCHER
 
 from ryu.lib.dpid import dpid_to_str
+from ryu.lib import ip
 
 LOG = logging.getLogger('ryu.controller.controller')
 
+DEFAULT_OFP_HOST = '0.0.0.0'
+DEFAULT_OFP_SW_CON_INTERVAL = 1
+
 CONF = cfg.CONF
 CONF.register_cli_opts([
-    cfg.StrOpt('ofp-listen-host', default='', help='openflow listen host'),
+    cfg.StrOpt('ofp-listen-host', default=DEFAULT_OFP_HOST,
+               help='openflow listen host (default %s)' % DEFAULT_OFP_HOST),
     cfg.IntOpt('ofp-tcp-listen-port', default=None,
                help='openflow tcp listen port '
                     '(default: %d)' % ofproto_common.OFP_TCP_PORT),
@@ -59,7 +66,14 @@ CONF.register_cli_opts([
                     '(default: %d)' % ofproto_common.OFP_SSL_PORT),
     cfg.StrOpt('ctl-privkey', default=None, help='controller private key'),
     cfg.StrOpt('ctl-cert', default=None, help='controller certificate'),
-    cfg.StrOpt('ca-certs', default=None, help='CA certificates')
+    cfg.StrOpt('ca-certs', default=None, help='CA certificates'),
+    cfg.ListOpt('ofp-switch-address-list', item_type=str, default=[],
+                help='list of IP address and port pairs (default empty). '
+                     'e.g., "127.0.0.1:6653,[::1]:6653"'),
+    cfg.IntOpt('ofp-switch-connect-interval',
+               default=DEFAULT_OFP_SW_CON_INTERVAL,
+               help='interval in seconds to connect to switches '
+                    '(default %d)' % DEFAULT_OFP_SW_CON_INTERVAL),
 ])
 CONF.register_opts([
     cfg.FloatOpt('socket-timeout',
@@ -73,6 +87,38 @@ CONF.register_opts([
                min=0,
                help='Maximum number of unreplied echo requests before datapath is disconnected.')
 ])
+
+
+def _split_addr(addr):
+    """
+    Splits a str of IP address and port pair into (host, port).
+
+    Example::
+
+        >>> _split_addr('127.0.0.1:6653')
+        ('127.0.0.1', 6653)
+        >>> _split_addr('[::1]:6653')
+        ('::1', 6653)
+
+    Raises ValueError if invalid format.
+
+    :param addr: A pair of IP address and port.
+    :return: IP address and port
+    """
+    e = ValueError('Invalid IP address and port pair: "%s"' % addr)
+    pair = addr.rsplit(':', 1)
+    if len(pair) != 2:
+        raise e
+
+    addr, port = pair
+    if addr.startswith('[') and addr.endswith(']'):
+        addr = addr.lstrip('[').rstrip(']')
+        if not ip.valid_ipv6(addr):
+            raise e
+    elif not ip.valid_ipv4(addr):
+        raise e
+
+    return addr, int(port, 0)
 
 
 class OpenFlowController(object):
@@ -90,14 +136,52 @@ class OpenFlowController(object):
             self.ofp_tcp_listen_port = CONF.ofp_tcp_listen_port
             self.ofp_ssl_listen_port = CONF.ofp_ssl_listen_port
 
+        # Example:
+        # self._clients = {
+        #     ('127.0.0.1', 6653): <instance of StreamClient>,
+        # }
+        self._clients = {}
+
     # entry point
     def __call__(self):
         # LOG.debug('call')
+        for address in CONF.ofp_switch_address_list:
+            addr = tuple(_split_addr(address))
+            self.spawn_client_loop(addr)
+
         self.server_loop(self.ofp_tcp_listen_port,
                          self.ofp_ssl_listen_port)
 
+    def spawn_client_loop(self, addr, interval=None):
+        interval = interval or CONF.ofp_switch_connect_interval
+        client = hub.StreamClient(addr)
+        hub.spawn(client.connect_loop, datapath_connection_factory, interval)
+        self._clients[addr] = client
+
+    def stop_client_loop(self, addr):
+        client = self._clients.get(addr, None)
+        if client is not None:
+            client.stop()
+
     def server_loop(self, ofp_tcp_listen_port, ofp_ssl_listen_port):
         if CONF.ctl_privkey is not None and CONF.ctl_cert is not None:
+            if not hasattr(ssl, 'SSLContext'):
+                # anything less than python 2.7.9 supports only TLSv1
+                # or less, thus we choose TLSv1
+                ssl_args = {'ssl_version': ssl.PROTOCOL_TLSv1}
+            else:
+                # from 2.7.9 and versions 3.4+ ssl context creation is
+                # supported. Protocol_TLS from 2.7.13 and from 3.5.3
+                # replaced SSLv23. Functionality is similar.
+                if hasattr(ssl, 'PROTOCOL_TLS'):
+                    p = 'PROTOCOL_TLS'
+                else:
+                    p = 'PROTOCOL_SSLv23'
+
+                ssl_args = {'ssl_ctx': ssl.SSLContext(getattr(ssl, p))}
+                # Restrict non-safe versions
+                ssl_args['ssl_ctx'].options |= ssl.OP_NO_SSLv3 | ssl.OP_NO_SSLv2
+
             if CONF.ca_certs is not None:
                 server = StreamServer((CONF.ofp_listen_host,
                                        ofp_ssl_listen_port),
@@ -105,15 +189,13 @@ class OpenFlowController(object):
                                       keyfile=CONF.ctl_privkey,
                                       certfile=CONF.ctl_cert,
                                       cert_reqs=ssl.CERT_REQUIRED,
-                                      ca_certs=CONF.ca_certs,
-                                      ssl_version=ssl.PROTOCOL_TLSv1)
+                                      ca_certs=CONF.ca_certs, **ssl_args)
             else:
                 server = StreamServer((CONF.ofp_listen_host,
                                        ofp_ssl_listen_port),
                                       datapath_connection_factory,
                                       keyfile=CONF.ctl_privkey,
-                                      certfile=CONF.ctl_cert,
-                                      ssl_version=ssl.PROTOCOL_TLSv1)
+                                      certfile=CONF.ctl_cert, **ssl_args)
         else:
             server = StreamServer((CONF.ofp_listen_host,
                                    ofp_tcp_listen_port),
@@ -129,12 +211,10 @@ def _deactivate(method):
             method(self)
         finally:
             try:
-                self.socket.shutdown(SHUT_RDWR)
-            except (EOFError, IOError):
+                self.socket.close()
+            except IOError:
                 pass
 
-            if not self.is_active:
-                self.socket.close()
     return deactivate
 
 
@@ -212,14 +292,24 @@ class Datapath(ofproto_protocol.ProtocolDesc):
         self._ports = None
         self.flow_format = ofproto_v1_0.NXFF_OPENFLOW10
         self.ofp_brick = ryu.base.app_manager.lookup_service_brick('ofp_event')
+        self.state = None  # for pylint
         self.set_state(HANDSHAKE_DISPATCHER)
 
-    @_deactivate
+    def _close_write(self):
+        # Note: Close only further sends in order to wait for the switch to
+        # disconnect this connection.
+        try:
+            self.socket.shutdown(SHUT_WR)
+        except (EOFError, IOError):
+            pass
+
     def close(self):
-        if self.state != DEAD_DISPATCHER:
-            self.set_state(DEAD_DISPATCHER)
+        self.set_state(DEAD_DISPATCHER)
+        self._close_write()
 
     def set_state(self, state):
+        if self.state == state:
+            return
         self.state = state
         ev = ofp_event.EventOFPStateChange(self)
         ev.state = state
@@ -235,7 +325,7 @@ class Datapath(ofproto_protocol.ProtocolDesc):
         while self.state != DEAD_DISPATCHER:
             try:
                 read_len = min_read_len
-                if (remaining_read_len > min_read_len):
+                if remaining_read_len > min_read_len:
                     read_len = remaining_read_len
                 ret = self.socket.recv(read_len)
             except SocketTimeout:
@@ -247,14 +337,14 @@ class Datapath(ofproto_protocol.ProtocolDesc):
             except (EOFError, IOError):
                 break
 
-            if len(ret) == 0:
+            if not ret:
                 break
 
             buf += ret
             buf_len = len(buf)
             while buf_len >= min_read_len:
                 (version, msg_type, msg_len, xid) = ofproto_parser.header(buf)
-                if (msg_len < min_read_len):
+                if msg_len < min_read_len:
                     # Someone isn't playing nicely; log it, and try something sane.
                     LOG.debug("Message with invalid length %s received from switch at address %s",
                               msg_len, self.address)
@@ -270,7 +360,9 @@ class Datapath(ofproto_protocol.ProtocolDesc):
                     ev = ofp_event.ofp_msg_to_ev(msg)
                     self.ofp_brick.send_event_to_observers(ev, self.state)
 
-                    dispatchers = lambda x: x.callers[ev.__class__].dispatchers
+                    def dispatchers(x):
+                        return x.callers[ev.__class__].dispatchers
+
                     handlers = [handler for handler in
                                 self.ofp_brick.get_handlers(ev) if
                                 self.state in dispatchers(handler)]
@@ -293,9 +385,11 @@ class Datapath(ofproto_protocol.ProtocolDesc):
     def _send_loop(self):
         try:
             while self.state != DEAD_DISPATCHER:
-                buf = self.send_q.get()
+                buf, close_socket = self.send_q.get()
                 self._send_q_sem.release()
                 self.socket.sendall(buf)
+                if close_socket:
+                    break
         except SocketTimeout:
             LOG.debug("Socket timed out while sending data to switch at address %s",
                       self.address)
@@ -315,14 +409,14 @@ class Datapath(ofproto_protocol.ProtocolDesc):
                     self._send_q_sem.release()
             except hub.QueueEmpty:
                 pass
-            # Finally, ensure the _recv_loop terminates.
-            self.close()
+            # Finally, disallow further sends.
+            self._close_write()
 
-    def send(self, buf):
+    def send(self, buf, close_socket=False):
         msg_enqueued = False
         self._send_q_sem.acquire()
         if self.send_q:
-            self.send_q.put(buf)
+            self.send_q.put((buf, close_socket))
             msg_enqueued = True
         else:
             self._send_q_sem.release()
@@ -337,13 +431,13 @@ class Datapath(ofproto_protocol.ProtocolDesc):
         msg.set_xid(self.xid)
         return self.xid
 
-    def send_msg(self, msg):
+    def send_msg(self, msg, close_socket=False):
         assert isinstance(msg, self.ofproto_parser.MsgBase)
         if msg.xid is None:
             self.set_xid(msg)
         msg.serialize()
         # LOG.debug('send_msg %s', msg)
-        return self.send(msg.buf)
+        return self.send(msg.buf, close_socket=close_socket)
 
     def _echo_request_loop(self):
         if not self.max_unreplied_echo_requests:
@@ -359,7 +453,7 @@ class Datapath(ofproto_protocol.ProtocolDesc):
     def acknowledge_echo_reply(self, xid):
         try:
             self.unreplied_echo_requests.remove(xid)
-        except:
+        except ValueError:
             pass
 
     def serve(self):

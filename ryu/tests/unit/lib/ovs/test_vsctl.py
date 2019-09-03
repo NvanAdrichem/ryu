@@ -24,6 +24,11 @@ from nose.tools import ok_
 from ryu.lib.hub import sleep
 from ryu.lib.ovs import vsctl
 
+try:
+    import mock  # Python 2
+except ImportError:
+    from unittest import mock  # Python 3
+
 
 LOG = logging.getLogger(__name__)
 
@@ -37,6 +42,25 @@ def setUpModule():
     if not find_executable('docker'):
         raise unittest.SkipTest(
             'Docker is not available. Test in %s will be skipped.' % __name__)
+
+
+class TestUtils(unittest.TestCase):
+    """
+    Test cases for utilities defined in module.
+    """
+
+    @mock.patch('os.path.isfile', mock.MagicMock(return_value=True))
+    def test_valid_ovsdb_addr_with_unix(self):
+        ok_(vsctl.valid_ovsdb_addr('unix:/var/run/openvswitch/db.sock'))
+
+    def test_valid_ovsdb_addr_with_ipv4(self):
+        ok_(vsctl.valid_ovsdb_addr('tcp:127.0.0.1:6640'))
+
+    def test_valid_ovsdb_addr_with_ipv6(self):
+        ok_(vsctl.valid_ovsdb_addr('ssl:[::1]:6640'))
+
+    def test_valid_ovsdb_addr_with_invalid_type(self):
+        eq_(vsctl.valid_ovsdb_addr('invalid:127.0.0.1:6640'), False)
 
 
 def _run(command):
@@ -83,7 +107,7 @@ class TestVSCtl(unittest.TestCase):
     def _docker_inspect_ip_addr(cls, container):
         return _run(
             'docker inspect --format="{{.NetworkSettings.IPAddress}}" %s' %
-            container)[0]
+            container)[0].strip('"')
 
     @classmethod
     def _set_up_mn_container(cls):

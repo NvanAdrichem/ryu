@@ -51,19 +51,22 @@ from ryu.ofproto import ofproto_parser
 class OFPHandler(ryu.base.app_manager.RyuApp):
     def __init__(self, *args, **kwargs):
         super(OFPHandler, self).__init__(*args, **kwargs)
-        self.name = 'ofp_event'
+        self.name = ofp_event.NAME
+        self.controller = None
 
     def start(self):
         super(OFPHandler, self).start()
-        return hub.spawn(OpenFlowController())
+        self.controller = OpenFlowController()
+        return hub.spawn(self.controller)
 
     def _hello_failed(self, datapath, error_desc):
-        self.logger.error(error_desc)
-        error_msg = datapath.ofproto_parser.OFPErrorMsg(datapath)
-        error_msg.type = datapath.ofproto.OFPET_HELLO_FAILED
-        error_msg.code = datapath.ofproto.OFPHFC_INCOMPATIBLE
-        error_msg.data = error_desc
-        datapath.send_msg(error_msg)
+        self.logger.error('%s on datapath %s', error_desc, datapath.address)
+        error_msg = datapath.ofproto_parser.OFPErrorMsg(
+            datapath=datapath,
+            type_=datapath.ofproto.OFPET_HELLO_FAILED,
+            code=datapath.ofproto.OFPHFC_INCOMPATIBLE,
+            data=error_desc)
+        datapath.send_msg(error_msg, close_socket=True)
 
     @set_ev_handler(ofp_event.EventOFPHello, HANDSHAKE_DISPATCHER)
     def hello_handler(self, ev):
@@ -271,15 +274,24 @@ class OFPHandler(ryu.base.app_manager.RyuApp):
         self.logger.debug(
             "EventOFPErrorMsg received.\n"
             "version=%s, msg_type=%s, msg_len=%s, xid=%s\n"
-            " `-- msg_type: %s\n"
-            "OFPErrorMsg(type=%s, code=%s, data=b'%s')\n"
-            " |-- type: %s\n"
-            " |-- code: %s",
+            " `-- msg_type: %s",
             hex(msg.version), hex(msg.msg_type), hex(msg.msg_len),
-            hex(msg.xid), ofp.ofp_msg_type_to_str(msg.msg_type),
-            hex(msg.type), hex(msg.code), utils.binary_str(msg.data),
-            ofp.ofp_error_type_to_str(msg.type),
-            ofp.ofp_error_code_to_str(msg.type, msg.code))
+            hex(msg.xid),
+            ofp.ofp_msg_type_to_str(msg.msg_type))
+        if msg.type == ofp.OFPET_EXPERIMENTER:
+            self.logger.debug(
+                "OFPErrorExperimenterMsg(type=%s, exp_type=%s,"
+                " experimenter=%s, data=b'%s')",
+                hex(msg.type), hex(msg.exp_type),
+                hex(msg.experimenter), utils.binary_str(msg.data))
+        else:
+            self.logger.debug(
+                "OFPErrorMsg(type=%s, code=%s, data=b'%s')\n"
+                " |-- type: %s\n"
+                " |-- code: %s",
+                hex(msg.type), hex(msg.code), utils.binary_str(msg.data),
+                ofp.ofp_error_type_to_str(msg.type),
+                ofp.ofp_error_code_to_str(msg.type, msg.code))
         if msg.type == ofp.OFPET_HELLO_FAILED:
             self.logger.debug(
                 " `-- data: %s", msg.data.decode('ascii'))

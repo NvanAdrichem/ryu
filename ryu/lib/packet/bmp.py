@@ -69,7 +69,7 @@ BMP_PEER_DOWN_REASON_REMOTE_NO_NOTIFICATION = 4
 
 
 class BMPMessage(packet_base.PacketBase, TypeDisp):
-    """Base class for BGP Monitoring Protocol messages.
+    r"""Base class for BGP Monitoring Protocol messages.
 
     An instance has the following attributes at least.
     Most of them are same to the on-wire counterparts but in host byte
@@ -141,7 +141,7 @@ class BMPMessage(packet_base.PacketBase, TypeDisp):
 
 
 class BMPPeerMessage(BMPMessage):
-    """BMP Message with Per Peer Header
+    r"""BMP Message with Per Peer Header
 
     Following BMP Messages contain Per Peer Header after Common BMP Header.
 
@@ -208,7 +208,7 @@ class BMPPeerMessage(BMPMessage):
         if peer_flags & (1 << 7):
             peer_address = addrconv.ipv6.bin_to_text(peer_address)
         else:
-            peer_address = addrconv.ipv4.bin_to_text(peer_address[:4])
+            peer_address = addrconv.ipv4.bin_to_text(peer_address[-4:])
 
         peer_bgp_id = addrconv.ipv4.bin_to_text(peer_bgp_id)
 
@@ -234,7 +234,8 @@ class BMPPeerMessage(BMPMessage):
             flags |= (1 << 7)
             peer_address = addrconv.ipv6.text_to_bin(self.peer_address)
         else:
-            peer_address = addrconv.ipv4.text_to_bin(self.peer_address)
+            peer_address = struct.pack(
+                '!12x4s', addrconv.ipv4.text_to_bin(self.peer_address))
 
         peer_bgp_id = addrconv.ipv4.text_to_bin(self.peer_bgp_id)
 
@@ -249,7 +250,7 @@ class BMPPeerMessage(BMPMessage):
 
 @BMPMessage.register_type(BMP_MSG_ROUTE_MONITORING)
 class BMPRouteMonitoring(BMPPeerMessage):
-    """BMP Route Monitoring Message
+    r"""BMP Route Monitoring Message
 
     ========================== ===============================================
     Attribute                  Description
@@ -307,7 +308,7 @@ class BMPRouteMonitoring(BMPPeerMessage):
 
 @BMPMessage.register_type(BMP_MSG_STATISTICS_REPORT)
 class BMPStatisticsReport(BMPPeerMessage):
-    """BMP Statistics Report Message
+    r"""BMP Statistics Report Message
 
     ========================== ===============================================
     Attribute                  Description
@@ -423,7 +424,7 @@ class BMPStatisticsReport(BMPPeerMessage):
 
 @BMPMessage.register_type(BMP_MSG_PEER_DOWN_NOTIFICATION)
 class BMPPeerDownNotification(BMPPeerMessage):
-    """BMP Peer Down Notification Message
+    r"""BMP Peer Down Notification Message
 
     ========================== ===============================================
     Attribute                  Description
@@ -497,7 +498,7 @@ class BMPPeerDownNotification(BMPPeerMessage):
 
 @BMPMessage.register_type(BMP_MSG_PEER_UP_NOTIFICATION)
 class BMPPeerUpNotification(BMPPeerMessage):
-    """BMP Peer Up Notification Message
+    r"""BMP Peer Up Notification Message
 
     ========================== ===============================================
     Attribute                  Description
@@ -562,7 +563,7 @@ class BMPPeerUpNotification(BMPPeerMessage):
          remote_port) = struct.unpack_from(cls._PACK_STR, six.binary_type(rest))
 
         if '.' in kwargs['peer_address']:
-            local_address = addrconv.ipv4.bin_to_text(local_address[:4])
+            local_address = addrconv.ipv4.bin_to_text(local_address[-4:])
         elif ':' in kwargs['peer_address']:
             local_address = addrconv.ipv6.bin_to_text(local_address)
         else:
@@ -586,7 +587,8 @@ class BMPPeerUpNotification(BMPPeerMessage):
         msg = super(BMPPeerUpNotification, self).serialize_tail()
 
         if '.' in self.local_address:
-            local_address = addrconv.ipv4.text_to_bin(self.local_address)
+            local_address = struct.pack(
+                '!12x4s', addrconv.ipv4.text_to_bin(self.local_address))
         elif ':' in self.local_address:
             local_address = addrconv.ipv6.text_to_bin(self.local_address)
         else:
@@ -603,7 +605,7 @@ class BMPPeerUpNotification(BMPPeerMessage):
 
 @BMPMessage.register_type(BMP_MSG_INITIATION)
 class BMPInitiation(BMPMessage):
-    """BMP Initiation Message
+    r"""BMP Initiation Message
 
     ========================== ===============================================
     Attribute                  Description
@@ -667,7 +669,7 @@ class BMPInitiation(BMPMessage):
 
 @BMPMessage.register_type(BMP_MSG_TERMINATION)
 class BMPTermination(BMPMessage):
-    """BMP Termination Message
+    r"""BMP Termination Message
 
     ========================== ===============================================
     Attribute                  Description

@@ -30,7 +30,6 @@ from ryu.lib.packet.bgp import BGPPathAttributeOrigin
 from ryu.lib.packet.bgp import BGPPathAttributeAsPath
 from ryu.lib.packet.bgp import EvpnEthernetSegmentNLRI
 from ryu.lib.packet.bgp import BGPPathAttributeExtendedCommunities
-from ryu.lib.packet.bgp import BGPTwoOctetAsSpecificExtendedCommunity
 from ryu.lib.packet.bgp import BGPPathAttributeMultiExitDisc
 from ryu.lib.packet.bgp import BGPEncapsulationExtendedCommunity
 from ryu.lib.packet.bgp import BGPEvpnEsiLabelExtendedCommunity
@@ -40,6 +39,10 @@ from ryu.lib.packet.bgp import PmsiTunnelIdIngressReplication
 from ryu.lib.packet.bgp import RF_L2_EVPN
 from ryu.lib.packet.bgp import EvpnMacIPAdvertisementNLRI
 from ryu.lib.packet.bgp import EvpnIpPrefixNLRI
+from ryu.lib.packet.safi import (
+    IP_FLOWSPEC,
+    VPN_FLOWSPEC,
+)
 
 from ryu.services.protocols.bgp.base import OrderedDict
 from ryu.services.protocols.bgp.constants import VPN_TABLE
@@ -47,6 +50,7 @@ from ryu.services.protocols.bgp.constants import VRF_TABLE
 from ryu.services.protocols.bgp.info_base.base import Destination
 from ryu.services.protocols.bgp.info_base.base import Path
 from ryu.services.protocols.bgp.info_base.base import Table
+from ryu.services.protocols.bgp.utils.bgp import create_rt_extended_community
 from ryu.services.protocols.bgp.utils.stats import LOCAL_ROUTES
 from ryu.services.protocols.bgp.utils.stats import REMOTE_ROUTES
 from ryu.services.protocols.bgp.utils.stats import RESOURCE_ID
@@ -167,6 +171,8 @@ class VrfTable(Table):
             # Because NLRI class is the same if the route family is EVPN,
             # we re-use the NLRI instance.
             vrf_nlri = vpn_path.nlri
+        elif self.ROUTE_FAMILY.safi in [IP_FLOWSPEC, VPN_FLOWSPEC]:
+            vrf_nlri = self.NLRI_CLASS(rules=vpn_path.nlri.rules)
         else:  # self.VPN_ROUTE_FAMILY in [RF_IPv4_VPN, RF_IPv6_VPN]
             # Copy NLRI instance
             ip, masklen = vpn_path.nlri.prefix.split('/')
@@ -267,19 +273,9 @@ class VrfTable(Table):
                                    es_import=es_import))
 
             for rt in vrf_conf.export_rts:
-                as_num, local_admin = rt.split(':')
-                subtype = 2
-                communities.append(BGPTwoOctetAsSpecificExtendedCommunity(
-                                   as_number=int(as_num),
-                                   local_administrator=int(local_admin),
-                                   subtype=subtype))
+                communities.append(create_rt_extended_community(rt, 2))
             for soo in vrf_conf.soo_list:
-                as_num, local_admin = soo.split(':')
-                subtype = 3
-                communities.append(BGPTwoOctetAsSpecificExtendedCommunity(
-                                   as_number=int(as_num),
-                                   local_administrator=int(local_admin),
-                                   subtype=subtype))
+                communities.append(create_rt_extended_community(soo, 3))
 
             # Set Tunnel Encapsulation Attribute
             tunnel_type = kwargs.get('tunnel_type', None)
@@ -329,7 +325,8 @@ class VrfTable(Table):
                 pattrs[BGP_ATTR_TYEP_PMSI_TUNNEL_ATTRIBUTE] = \
                     BGPPathAttributePmsiTunnel(pmsi_flags=0,
                                                tunnel_type=pmsi_tunnel_type,
-                                               tunnel_id=tunnel_id)
+                                               tunnel_id=tunnel_id,
+                                               vni=kwargs.get('vni', None))
 
         puid = self.VRF_PATH_CLASS.create_puid(
             vrf_conf.route_dist, nlri.prefix)
@@ -532,6 +529,9 @@ class VrfPath(Path):
                 - `label_list`: (list) List of labels for this path.
             Note: other parameters are as documented in super class.
         """
+        if self.ROUTE_FAMILY.safi in [IP_FLOWSPEC, VPN_FLOWSPEC]:
+            nexthop = '0.0.0.0'
+
         Path.__init__(self, source, nlri, src_ver_num, pattrs, nexthop,
                       is_withdraw)
         if label_list is None:
@@ -586,6 +586,11 @@ class VrfPath(Path):
             # Because NLRI class is the same if the route family is EVPN,
             # we re-use the NLRI instance.
             vpn_nlri = self._nlri
+
+        elif self.ROUTE_FAMILY.safi in [IP_FLOWSPEC, VPN_FLOWSPEC]:
+            vpn_nlri = self.VPN_NLRI_CLASS(route_dist=route_dist,
+                                           rules=self.nlri.rules)
+
         else:  # self.ROUTE_FAMILY in [RF_IPv4_UC, RF_IPv6_UC]
             ip, masklen = self._nlri.prefix.split('/')
             vpn_nlri = self.VPN_NLRI_CLASS(length=int(masklen),

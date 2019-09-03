@@ -125,6 +125,56 @@ def ofp_msg_from_jsondict(dp, jsondict):
         return cls.from_jsondict(v, datapath=dp)
 
 
+def ofp_instruction_from_jsondict(dp, jsonlist, encap=True):
+    """
+    This function is intended to be used with
+    ryu.lib.ofctl_string.ofp_instruction_from_str.
+    It is very similar to ofp_msg_from_jsondict, but works on
+    a list of OFPInstructions/OFPActions. It also encapsulates
+    OFPAction into OFPInstructionActions, as >OF1.0 OFPFlowMod
+    requires that.
+
+    This function takes the following arguments.
+
+    ======== ==================================================
+    Argument Description
+    ======== ==================================================
+    dp       An instance of ryu.controller.Datapath.
+    jsonlist A list of JSON style dictionaries.
+    encap    Encapsulate OFPAction into OFPInstructionActions.
+             Must be false for OF10.
+    ======== ==================================================
+    """
+    proto = dp.ofproto
+    parser = dp.ofproto_parser
+    actions = []
+    result = []
+    for jsondict in jsonlist:
+        assert len(jsondict) == 1
+        k, v = list(jsondict.items())[0]
+        cls = getattr(parser, k)
+        if issubclass(cls, parser.OFPAction):
+            if encap:
+                actions.append(cls.from_jsondict(v))
+                continue
+        else:
+            ofpinst = getattr(parser, 'OFPInstruction', None)
+            if not ofpinst or not issubclass(cls, ofpinst):
+                raise ValueError("Supplied jsondict is of wrong type: %s",
+                                 jsondict)
+        result.append(cls.from_jsondict(v))
+
+    if not encap:
+        return result
+
+    if actions:
+        # Although the OpenFlow spec says Apply Actions is executed first,
+        # let's place it in the head as a precaution.
+        result = [parser.OFPInstructionActions(
+            proto.OFPIT_APPLY_ACTIONS, actions)] + result
+    return result
+
+
 class StringifyMixin(stringify.StringifyMixin):
     _class_prefixes = ["OFP", "ONF", "MT", "NX"]
 

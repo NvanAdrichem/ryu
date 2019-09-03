@@ -19,11 +19,14 @@ OpenFlow event definitions.
 """
 
 import inspect
+import time
 
 from ryu.controller import handler
 from ryu import ofproto
-from ryu import utils
 from . import event
+
+
+NAME = 'ofp_event'
 
 
 class EventOFPMsgBase(event.EventBase):
@@ -41,12 +44,15 @@ class EventOFPMsgBase(event.EventBase):
     msg.datapath A ryu.controller.controller.Datapath instance
                  which describes an OpenFlow switch from which we received
                  this OpenFlow message.
+    timestamp    Timestamp when Datapath instance generated this event.
     ============ ==============================================================
 
     The msg object has some more additional members whose values are extracted
     from the original OpenFlow message.
     """
+
     def __init__(self, msg):
+        self.timestamp = time.time()
         super(EventOFPMsgBase, self).__init__()
         self.msg = msg
 
@@ -113,6 +119,7 @@ class EventOFPStateChange(event.EventBase):
     datapath  ryu.controller.controller.Datapath instance of the switch
     ========= =================================================================
     """
+
     def __init__(self, dp):
         super(EventOFPStateChange, self).__init__()
         self.datapath = dp
@@ -134,6 +141,7 @@ class EventOFPPortStateChange(event.EventBase):
     port_no   Port number which state was changed
     ========= =================================================================
     """
+
     def __init__(self, dp, reason, port_no):
         super(EventOFPPortStateChange, self).__init__()
         self.datapath = dp
