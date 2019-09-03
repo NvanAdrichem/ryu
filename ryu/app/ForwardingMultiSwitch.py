@@ -275,43 +275,49 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         mat = self.adj
         dpids = self.dpids()
         
-        str = ""
+        _str = "AdjacencyMatrix\n\tTo:"
         for dpid in dpids:
-            str += "\t%d"%(dpid,)
-        str += "\n"
+            _str += "\t%d"%(dpid,)
+        _str += "\nFrom:\t"
+        for dpid in dpids:
+            _str += "\t%s"%(len(str(dpid))*'_',)
+        _str+= "\n"
         
         for u in dpids:
-            str += "%d"%(u,)
+            _str += "%d\t|"%(u,)
             for v in dpids:
                 if mat[u][v] is not None:
                     port = mat[u][v]
-                    str += "\t%d"%(port,)
+                    _str += "\t%d"%(port,)
                 else:
-                    str+="\t"
-            str+= "\n"
+                    _str+="\t"
+            _str+= "\n"
             
-        LOG.warn( str )
+        LOG.warn( _str )
 
     def _print_fw_matrix(self):
         mat = self.fw
         dpids = self.dpids()
         
-        str = ""
+        _str = "ForwardingMatrix (NextHop)\n\tTo:"
         for dpid in dpids:
-            str += "\t%d"%(dpid,)
-        str += "\n"
+            _str += "\t%d"%(dpid,)
+        _str += "\nFrom:\tVia"
+        for dpid in dpids:
+            _str += "\t%s"%(len(str(dpid))*'_',)
+        _str += "\n"
         
         for u in dpids:
-            str += "%d"%(u,)
+            _str += "%d\t|"%(u,)
             for v in dpids:
                 if mat[u][v] is not None:
                     (switch, port) = mat[u][v]
-                    str += "\t%d"%(switch,)
+                    _str += "\t%d"%(switch,)
                 else:
-                    str+="\t"
-            str+= "\n"
+                    _str+="\t"
+            _str+= "\n"
             
-        LOG.warn( str )
+        LOG.warn( _str )
 
     def _calc_ForwardingMatrix(self):
         #Floyd-Warshall implementation
