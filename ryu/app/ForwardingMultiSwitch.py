@@ -1,4 +1,4 @@
-# Copyright (C) 2017 Delft University of Technology, TNO, Niels van Adrichem.
+# Copyright (C) 2019 Delft University of Technology, TNO, Niels van Adrichem.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,30 +14,21 @@
 # limitations under the License.
 
 import logging
-
-from ryu.base import app_manager
-from ryu.controller import handler
-
-from ryu.topology import event
-from ryu.topology import switches
-
-from ryu.ofproto import ofproto_v1_3
-from ryu.controller import ofp_event
-
 from collections import defaultdict
 from collections import namedtuple
-
 from pprint import pprint
-
+from ryu.base import app_manager
+from ryu.controller import handler
+from ryu.controller import ofp_event
 from ryu.controller.handler import CONFIG_DISPATCHER
-
-from ryu.lib.packet import packet
+from ryu.lib import mac
+from ryu.lib import ovs
 from ryu.lib.packet import ethernet
 from ryu.lib.packet import ether_types
-
-from ryu.lib import mac
-
-from ryu.lib import ovs
+from ryu.lib.packet import packet
+from ryu.ofproto import ofproto_v1_3
+from ryu.topology import event
+from ryu.topology import switches
 
 LOG = logging.getLogger(__name__)
 
@@ -168,8 +159,8 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
                     #Initialize ports
                     ports = []
                     #Add local port if that is not the originating port, only necessary in Hardware Testbed
-                    #if (iDpid,ofp.OFPP_LOCAL) != (dpid, in_port):
-                    #    ports += [ofp.OFPP_LOCAL]
+                    if self.CONF.broadcast_to_localport and (iDpid,ofp.OFPP_LOCAL) != (dpid, in_port):
+                        ports += [ofp.OFPP_LOCAL]
 
                     #Exclude the inter-switch and possible other incoming ports from flooding
                     ports += [p.port_no for p in switch.ports if (iDpid,p.port_no) != (dpid, in_port) and (iDpid,p.port_no) not in self.switch_ports]
@@ -416,6 +407,11 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
 
             #Add non-switch (thus hosts-)ports
             switch = self.switches[iDpid]
+            #Add local port if that is not the originating port, only necessary in Hardware Testbed
+            if self.CONF.broadcast_to_localport and (iDpid,ofp.OFPP_LOCAL) != (dpid, in_port):
+                ports += [ofp.OFPP_LOCAL]
+
+            #Exclude the inter-switch and possible other incoming ports from flooding
             ports += [p.port_no for p in switch.ports if (iDpid,p.port_no) != (dpid, in_port) and (iDpid,p.port_no) not in self.switch_ports]
             if len(ports)>0:
                 LOG.warn("\t\tConfigure switch %d to flood to ports %s"%(iDpid, ports))
