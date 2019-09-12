@@ -419,7 +419,8 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
                     _in_port = in_port
                 else:
                     (_, _in_port) = self.fw[iDpid][dpid]
-                match_kwargs['in_port'] = _in_port
+                if self.CONF.match_on_inport:
+                    match_kwargs['in_port'] = _in_port
                 match = parser.OFPMatch(**match_kwargs)
                 LOG.debug("\t\tHop-individual match = %s"%(match,))
                 #Send rules
@@ -453,7 +454,8 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         for (nexthop, port) in path:
             LOG.warn("\t\tConfigure switch %d to forward to switch %d over port %d"%(dpid, nexthop,port))
 
-            match_kwargs['in_port'] = in_port
+            if self.CONF.match_on_inport:
+                match_kwargs['in_port'] = in_port
             match = parser.OFPMatch(**match_kwargs)
             LOG.debug("\t\tHop-individual match = %s"%(match,))
             actions = [parser.OFPActionOutput(port)]
@@ -474,7 +476,8 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         port = dst.port
         LOG.warn("\t\tConfigure switch %d to output on port %d"%(dpid,port))
 
-        match_kwargs['in_port'] = in_port
+        if self.CONF.match_on_inport:
+            match_kwargs['in_port'] = in_port
         match = parser.OFPMatch(**match_kwargs)
         LOG.debug("\t\tHop-individual match = %s"%(match,))
         actions = [parser.OFPActionOutput(port)]

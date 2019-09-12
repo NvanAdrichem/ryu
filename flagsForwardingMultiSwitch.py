@@ -18,5 +18,7 @@ from ryu import cfg
 CONF = cfg.CONF
 CONF.register_cli_opts([
     cfg.BoolOpt('broadcast-to-localport', default=False,
-                help='Add local port as output to flood rules, this is among other convenient when running Open vSwitch as softswitch on physical servers and you wish to use the local port to connect to the kernel because the local port is not automatically iterated through.')
+                help='Add local port as output to flood rules, this is among other convenient when running Open vSwitch as softswitch on physical servers and you wish to use the local port to connect to the kernel because the local port is not automatically iterated through.'),
+    cfg.BoolOpt('match-on-inport', default=False,
+                help='Add incoming port to flow match fields, this is among other convenient when a hardware switch its chip has difficulty differentiating between bridges.')
 ])
