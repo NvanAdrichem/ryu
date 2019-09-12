@@ -158,12 +158,13 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
 
                     #Initialize ports
                     ports = []
-                    #Add local port if that is not the originating port, only necessary in Hardware Testbed
-                    if self.CONF.broadcast_to_localport and (iDpid,ofp.OFPP_LOCAL) != (dpid, in_port):
-                        ports += [ofp.OFPP_LOCAL]
 
                     #Exclude the inter-switch and possible other incoming ports from flooding
                     ports += [p.port_no for p in switch.ports if (iDpid,p.port_no) != (dpid, in_port) and (iDpid,p.port_no) not in self.switch_ports]
+
+                    #Add local port if that is not the originating port, only necessary in Hardware Testbed
+                    if self.CONF.broadcast_to_localport and (iDpid,ofp.OFPP_LOCAL) != (dpid, in_port):
+                        ports += [ofp.OFPP_LOCAL]
 
                     if len(ports)>0:
                         _output(iDpid, ports)        
@@ -407,12 +408,13 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
 
             #Add non-switch (thus hosts-)ports
             switch = self.switches[iDpid]
+            #Exclude the inter-switch and possible other incoming ports from flooding
+            ports += [p.port_no for p in switch.ports if (iDpid,p.port_no) != (dpid, in_port) and (iDpid,p.port_no) not in self.switch_ports]
+
             #Add local port if that is not the originating port, only necessary in Hardware Testbed
             if self.CONF.broadcast_to_localport and (iDpid,ofp.OFPP_LOCAL) != (dpid, in_port):
                 ports += [ofp.OFPP_LOCAL]
 
-            #Exclude the inter-switch and possible other incoming ports from flooding
-            ports += [p.port_no for p in switch.ports if (iDpid,p.port_no) != (dpid, in_port) and (iDpid,p.port_no) not in self.switch_ports]
             if len(ports)>0:
                 LOG.warn("\t\tConfigure switch %d to flood to ports %s"%(iDpid, ports))
                 if iDpid == dpid:
