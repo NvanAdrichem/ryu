@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+#TODO: There are a lot of assumptions that links are symmetric.
+
 import logging
 from collections import defaultdict
 from collections import namedtuple
@@ -417,11 +419,11 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
 
             if len(ports)>0:
                 LOG.warn("\t\tConfigure switch %d to flood to ports %s"%(iDpid, ports))
-                if iDpid == dpid:
-                    _in_port = in_port
-                else:
-                    (_, _in_port) = self.fw[iDpid][dpid]
                 if self.CONF.match_on_inport:
+                    if iDpid == dpid:
+                        _in_port = in_port
+                    else:
+                        (_, _in_port) = self.fw[iDpid][dpid] #TODO: This assumes symmetric links
                     match_kwargs['in_port'] = _in_port
                 match = parser.OFPMatch(**match_kwargs)
                 LOG.debug("\t\tHop-individual match = %s"%(match,))
@@ -458,6 +460,7 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
 
             if self.CONF.match_on_inport:
                 match_kwargs['in_port'] = in_port
+                in_port = self.adj[nexthop][dpid] #TODO: this assumes symmetric links
             match = parser.OFPMatch(**match_kwargs)
             LOG.debug("\t\tHop-individual match = %s"%(match,))
             actions = [parser.OFPActionOutput(port)]
@@ -466,7 +469,6 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
             dp.send_msg(req)
 
             prevhop = dpid
-            in_port = self.adj[nexthop][prevhop]
 
             dpid = nexthop
             dp = self.switches[dpid].dp
