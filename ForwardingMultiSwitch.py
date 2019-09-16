@@ -236,34 +236,29 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
 
         SwitchPort = namedtuple('SwitchPort', 'dpid port')        
         
-        if (dpid,in_port) not in self.switch_ports:
+        if (dpid,in_port) in self.switch_ports:
+            LOG.warn("\tIncoming packet from switch-to-switch link, this should NOT occur.")
+            drop()
+        else:
             # only relearn locations if they arrived from non-interswitch links
             self.mac_learning[eth.src] = SwitchPort(dpid, in_port)    #relearn the location of the mac-address
             LOG.warn("\tLearned or updated MAC address")
-        else:
-            LOG.warn("\tIncoming packet from switch-to-switch link, this should NOT occur.")
-            #DROP it
 
-        if mac.is_multicast( mac.haddr_to_bin(eth.dst) ):
-            self._install_tree(dpid, pkt, in_port)
-            flood()
-            LOG.warn("\tFlooded multicast packet")
-        elif eth.dst not in self.mac_learning:
-            flood()
-            LOG.warn("\tFlooded unicast packet, unknown MAC address location")
-        
-        #ARP messages are too infrequent and volatile of nature to create flows for, output immediately
-        elif eth.ethertype == ether_types.ETH_TYPE_ARP:
-            output(self.mac_learning[eth.dst].dpid, self.mac_learning[eth.dst].port)
-            LOG.warn("\tProcessed packet, send to recipient at %s"%(self.mac_learning[eth.dst],))
-        #Create flow and output or forward.
-        else:
-
-            self._install_path(dpid, pkt, in_port)
-            
-            #Output the first packet to its destination
-            output(self.mac_learning[eth.dst].dpid, self.mac_learning[eth.dst].port)
-            LOG.warn("\tProcessed packet, sent to recipient at %s"%(self.mac_learning[eth.dst],))
+            if mac.is_multicast( mac.haddr_to_bin(eth.dst) ):
+                if eth.ethertype != ether_types.ETH_TYPE_ARP: #ARP messages are too infrequent and volatile of nature to create flows for, flood immediately
+                    self._install_tree(dpid, pkt, in_port)
+                #Output the first packet to its destinations
+                flood()
+                LOG.warn("\tFlooded multicast packet")
+            elif eth.dst not in self.mac_learning:
+                flood()
+                LOG.warn("\tFlooded unicast packet, unknown MAC address location")
+            else:
+                if eth.ethertype != ether_types.ETH_TYPE_ARP: #ARP messages are too infrequent and volatile of nature to create flows for, flood immediately
+                    self._install_path(dpid, pkt, in_port)
+                #Output the first packet to its destination
+                output(self.mac_learning[eth.dst].dpid, self.mac_learning[eth.dst].port)
+                LOG.warn("\tProcessed packet, sent to recipient at %s"%(self.mac_learning[eth.dst],))
 
     def _print_adj_matrix(self):
         mat = self.adj
