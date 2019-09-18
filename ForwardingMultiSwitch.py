@@ -73,11 +73,19 @@ class ForwardingMultiSwitch(app_manager.RyuApp):
         dp = ev.datapath
         ofp = dp.ofproto
         parser = dp.ofproto_parser        
-        
+
         #Delete any possible currently existing flows.
         del_flows = parser.OFPFlowMod(dp, table_id=ofp.OFPTT_ALL, out_port=ofp.OFPP_ANY, out_group=ofp.OFPG_ANY, command=ofp.OFPFC_DELETE) 
         dp.send_msg(del_flows)
-        
+
+        #Make sure deletion is finished using a barrier before additional flows are added
+        barrier_req = parser.OFPBarrierRequest(dp)
+        dp.send_msg(barrier_req)
+
+        #Delete any possible currently existing groups.
+        del_groups = parser.OFPGroupMod(dp, command=ofp.OFPGC_DELETE, group_id=ofp.OFPG_ALL)
+        dp.send_msg(del_groups)
+
         #Make sure deletion is finished using a barrier before additional flows are added
         barrier_req = parser.OFPBarrierRequest(dp)
         dp.send_msg(barrier_req)
